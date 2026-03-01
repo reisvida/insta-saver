@@ -1,12 +1,6 @@
 import { Download, Image, Film, Smartphone } from "lucide-react";
 import { motion } from "framer-motion";
-
-const features = [
-  { icon: Image, title: "Posts & Carrosséis", desc: "Baixe fotos e carrosséis em resolução original" },
-  { icon: Film, title: "Reels & Vídeos", desc: "Download de Reels e IGTV em qualidade HD" },
-  { icon: Smartphone, title: "Stories", desc: "Salve stories públicos antes que expirem" },
-  { icon: Download, title: "Alta Qualidade", desc: "Sempre a melhor resolução disponível" },
-];
+import { useLanguage } from "@/i18n/LanguageContext";
 
 const container = {
   hidden: {},
@@ -18,10 +12,19 @@ const item = {
 };
 
 export default function Features() {
+  const { t } = useLanguage();
+
+  const features = [
+    { icon: Image, title: t.features.posts, desc: t.features.postsDesc },
+    { icon: Film, title: t.features.reels, desc: t.features.reelsDesc },
+    { icon: Smartphone, title: t.features.stories, desc: t.features.storiesDesc },
+    { icon: Download, title: t.features.quality, desc: t.features.qualityDesc },
+  ];
+
   return (
     <section className="w-full max-w-3xl mx-auto">
       <h2 className="font-display text-2xl sm:text-3xl font-bold text-center mb-8">
-        O que você pode <span className="gradient-text">baixar</span>
+        {t.features.title} <span className="gradient-text">{t.features.titleHighlight}</span>
       </h2>
       <motion.div
         variants={container}

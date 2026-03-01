@@ -1,0 +1,4 @@
+project_id = "piolztddssjrvjekblua"
+
+[functions.instagram-extract]
+verify_jwt = false
