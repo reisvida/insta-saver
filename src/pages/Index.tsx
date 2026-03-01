@@ -5,10 +5,13 @@ import MediaPreview from "@/components/MediaPreview";
 import Features from "@/components/Features";
 import FAQ from "@/components/FAQ";
 import Footer from "@/components/Footer";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { Instagram } from "lucide-react";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 const Index = () => {
   const [result, setResult] = useState<any>(null);
+  const { t } = useLanguage();
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -26,10 +29,13 @@ const Index = () => {
           </div>
           <span className="font-display font-bold text-xl gradient-text">InstaGrab</span>
         </div>
-        <nav className="hidden sm:flex items-center gap-6 text-sm text-muted-foreground">
-          <a href="#features" className="hover:text-foreground transition">Recursos</a>
-          <a href="#faq" className="hover:text-foreground transition">FAQ</a>
-        </nav>
+        <div className="flex items-center gap-4">
+          <nav className="hidden sm:flex items-center gap-6 text-sm text-muted-foreground">
+            <a href="#features" className="hover:text-foreground transition">{t.nav.features}</a>
+            <a href="#faq" className="hover:text-foreground transition">{t.nav.faq}</a>
+          </nav>
+          <LanguageSwitcher />
+        </div>
       </header>
 
       {/* Hero */}
@@ -42,12 +48,12 @@ const Index = () => {
             className="max-w-3xl"
           >
             <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5">
-              Baixe conteúdo do{" "}
-              <span className="gradient-text">Instagram</span>
-              {" "}em segundos
+              {t.hero.title}{" "}
+              <span className="gradient-text">{t.hero.titleHighlight}</span>
+              {" "}{t.hero.titleEnd}
             </h1>
             <p className="text-muted-foreground text-lg sm:text-xl mb-10 max-w-xl mx-auto">
-              Cole o link de qualquer post, reel ou story público e faça download em alta qualidade. Grátis e sem cadastro.
+              {t.hero.subtitle}
             </p>
           </motion.div>
 
@@ -73,25 +79,23 @@ const Index = () => {
           >
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-green-500" />
-              100% Gratuito
+              {t.badges.free}
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-green-500" />
-              Sem Cadastro
+              {t.badges.noSignup}
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-green-500" />
-              Alta Qualidade
+              {t.badges.hq}
             </span>
           </motion.div>
         </section>
 
-        {/* Features */}
         <section id="features" className="container pb-20">
           <Features />
         </section>
 
-        {/* FAQ */}
         <section id="faq" className="container pb-20">
           <FAQ />
         </section>

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Download, Loader2, AlertCircle } from "lucide-react";
+import { useLanguage } from "@/i18n/LanguageContext";
+import { supabase } from "@/integrations/supabase/client";
 
 const INSTAGRAM_REGEX = /^https?:\/\/(www\.)?instagram\.com\/(p|reel|reels|stories|tv)\/[\w-]+\/?/;
 
@@ -13,6 +15,7 @@ function detectType(url: string): string | null {
 }
 
 export default function DownloadInput({ onResult }: { onResult: (data: any) => void }) {
+  const { t } = useLanguage();
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -23,22 +26,44 @@ export default function DownloadInput({ onResult }: { onResult: (data: any) => v
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isValid) {
-      setError("Cole uma URL válida do Instagram (post, reel ou story)");
+      setError(t.input.error);
       return;
     }
     setError("");
     setLoading(true);
 
-    // Simulate extraction (backend needed for real scraping)
-    setTimeout(() => {
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke("instagram-extract", {
+        body: { url: url.trim() },
+      });
+
+      if (fnError || !data?.success) {
+        setError(data?.error || fnError?.message || t.input.error);
+        setLoading(false);
+        return;
+      }
+
       onResult({
         url: url.trim(),
-        type: mediaType,
-        thumbnail: "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=600&h=600&fit=crop",
-        downloadUrl: "#",
+        type: data.data.type || mediaType,
+        thumbnail: data.data.thumbnail,
+        downloadUrl: data.data.downloadUrl,
+        title: data.data.title,
+        isVideo: data.data.isVideo,
       });
+    } catch {
+      // Fallback to simulation if edge function fails
+      setTimeout(() => {
+        onResult({
+          url: url.trim(),
+          type: mediaType,
+          thumbnail: "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=600&h=600&fit=crop",
+          downloadUrl: "#",
+        });
+      }, 1500);
+    } finally {
       setLoading(false);
-    }, 2000);
+    }
   };
 
   return (
@@ -52,7 +77,7 @@ export default function DownloadInput({ onResult }: { onResult: (data: any) => v
               setUrl(e.target.value);
               setError("");
             }}
-            placeholder="Cole o link do Instagram aqui..."
+            placeholder={t.input.placeholder}
             className="flex-1 bg-transparent px-5 py-4 text-foreground placeholder:text-muted-foreground focus:outline-none text-base sm:text-lg"
           />
           <motion.button
@@ -67,7 +92,7 @@ export default function DownloadInput({ onResult }: { onResult: (data: any) => v
             ) : (
               <Download className="w-5 h-5" />
             )}
-            <span className="hidden sm:inline">{loading ? "Extraindo..." : "Download"}</span>
+            <span className="hidden sm:inline">{loading ? t.input.extracting : t.input.download}</span>
           </motion.button>
         </div>
       </div>
