@@ -34,75 +34,120 @@ Deno.serve(async (req) => {
     const shortcode = extractShortcode(url);
     const mediaType = detectType(url);
 
-    // Try fetching Instagram's oEmbed endpoint (public, no auth needed)
-    const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}`;
-    
     let thumbnail = '';
     let title = '';
+    let downloadUrl = '';
+    let isVideo = false;
 
-    try {
-      const oembedRes = await fetch(oembedUrl);
-      if (oembedRes.ok) {
-        const oembedData = await oembedRes.json();
-        thumbnail = oembedData.thumbnail_url || '';
-        title = oembedData.title || '';
+    // Method 1: Try Instagram's GraphQL endpoint (works for public posts)
+    if (shortcode) {
+      try {
+        const graphqlUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
+        const graphqlRes = await fetch(graphqlUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-IG-App-ID': '936619743392459',
+          },
+        });
+
+        if (graphqlRes.ok) {
+          const contentType = graphqlRes.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const data = await graphqlRes.json();
+            const media = data?.graphql?.shortcode_media || data?.items?.[0];
+            
+            if (media) {
+              thumbnail = media.display_url || media.thumbnail_src || media.image_versions2?.candidates?.[0]?.url || '';
+              title = media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption?.text || '';
+              isVideo = media.is_video || media.media_type === 2;
+              
+              if (isVideo) {
+                downloadUrl = media.video_url || media.video_versions?.[0]?.url || '';
+              } else {
+                downloadUrl = thumbnail;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.log('GraphQL method failed:', e);
       }
-    } catch (e) {
-      console.log('oEmbed failed, trying fallback:', e);
     }
 
-    // Fallback: fetch the page and extract OG meta tags
+    // Method 2: Try oEmbed (gets thumbnail at least)
+    if (!thumbnail) {
+      try {
+        const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
+        const oembedRes = await fetch(oembedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+          },
+        });
+        
+        if (oembedRes.ok) {
+          const contentType = oembedRes.headers.get('content-type') || '';
+          if (contentType.includes('json')) {
+            const oembedData = await oembedRes.json();
+            thumbnail = oembedData.thumbnail_url || '';
+            title = oembedData.title || '';
+            if (thumbnail) downloadUrl = thumbnail;
+          }
+        }
+      } catch (e) {
+        console.log('oEmbed failed:', e);
+      }
+    }
+
+    // Method 3: Fetch page and parse OG tags
     if (!thumbnail) {
       try {
         const pageRes = await fetch(url, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            'Accept': 'text/html',
           },
+          redirect: 'follow',
         });
 
         if (pageRes.ok) {
           const html = await pageRes.text();
           
-          // Extract og:image
-          const ogImageMatch = html.match(/<meta\s+(?:property|name)="og:image"\s+content="([^"]+)"/i) 
-            || html.match(/content="([^"]+)"\s+(?:property|name)="og:image"/i);
-          if (ogImageMatch) thumbnail = ogImageMatch[1];
-
-          // Extract og:video for reels
-          const ogVideoMatch = html.match(/<meta\s+(?:property|name)="og:video"\s+content="([^"]+)"/i)
-            || html.match(/content="([^"]+)"\s+(?:property|name)="og:video"/i);
-          
-          // Extract og:title
-          const ogTitleMatch = html.match(/<meta\s+(?:property|name)="og:title"\s+content="([^"]+)"/i)
-            || html.match(/content="([^"]+)"\s+(?:property|name)="og:title"/i);
-          if (ogTitleMatch) title = ogTitleMatch[1];
-
-          if (ogVideoMatch) {
-            return new Response(
-              JSON.stringify({
-                success: true,
-                data: {
-                  url,
-                  shortcode,
-                  type: mediaType,
-                  thumbnail,
-                  title,
-                  downloadUrl: ogVideoMatch[1],
-                  isVideo: true,
-                },
-              }),
-              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
+          const ogImageMatch = html.match(/property="og:image"\s+content="([^"]+)"/i) 
+            || html.match(/content="([^"]+)"\s+property="og:image"/i);
+          if (ogImageMatch) {
+            thumbnail = ogImageMatch[1].replace(/&amp;/g, '&');
+            downloadUrl = thumbnail;
           }
+
+          const ogVideoMatch = html.match(/property="og:video"\s+content="([^"]+)"/i)
+            || html.match(/content="([^"]+)"\s+property="og:video"/i);
+          if (ogVideoMatch) {
+            downloadUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
+            isVideo = true;
+          }
+
+          const ogTitleMatch = html.match(/property="og:title"\s+content="([^"]+)"/i)
+            || html.match(/content="([^"]+)"\s+property="og:title"/i);
+          if (ogTitleMatch) title = ogTitleMatch[1];
         }
       } catch (e) {
-        console.log('Page fetch fallback failed:', e);
+        console.log('Page fetch failed:', e);
       }
     }
 
-    // Return what we have
+    // If we still have nothing, return an error
+    if (!thumbnail && !downloadUrl) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Could not extract media. Instagram may be blocking the request. Try again or use a different link.',
+        }),
+        { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -111,9 +156,9 @@ Deno.serve(async (req) => {
           shortcode,
           type: mediaType,
           thumbnail,
-          title,
-          downloadUrl: thumbnail, // For images, the thumbnail IS the download
-          isVideo: false,
+          title: title.substring(0, 200),
+          downloadUrl: downloadUrl || thumbnail,
+          isVideo,
         },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

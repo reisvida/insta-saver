@@ -43,6 +43,13 @@ export default function DownloadInput({ onResult }: { onResult: (data: any) => v
         return;
       }
 
+      // Don't show preview if no thumbnail was extracted
+      if (!data.data.thumbnail && !data.data.downloadUrl) {
+        setError(t.input.error);
+        setLoading(false);
+        return;
+      }
+
       onResult({
         url: url.trim(),
         type: data.data.type || mediaType,
