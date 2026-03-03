@@ -33,50 +33,59 @@ Deno.serve(async (req) => {
 
     const shortcode = extractShortcode(url);
     const mediaType = detectType(url);
+    const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
 
     let thumbnail = '';
     let title = '';
     let downloadUrl = '';
     let isVideo = false;
 
-    // Method 1: Try Instagram's GraphQL endpoint (works for public posts)
-    if (shortcode) {
+    // Method 1: RapidAPI Instagram Scraper
+    if (rapidApiKey) {
       try {
-        const graphqlUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
-        const graphqlRes = await fetch(graphqlUrl, {
+        const apiUrl = `https://instagram-scraper-api2.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
+        const apiRes = await fetch(apiUrl, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-IG-App-ID': '936619743392459',
+            'x-rapidapi-host': 'instagram-scraper-api2.p.rapidapi.com',
+            'x-rapidapi-key': rapidApiKey,
           },
         });
 
-        if (graphqlRes.ok) {
-          const contentType = graphqlRes.headers.get('content-type') || '';
-          if (contentType.includes('application/json')) {
-            const data = await graphqlRes.json();
-            const media = data?.graphql?.shortcode_media || data?.items?.[0];
-            
-            if (media) {
-              thumbnail = media.display_url || media.thumbnail_src || media.image_versions2?.candidates?.[0]?.url || '';
-              title = media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption?.text || '';
-              isVideo = media.is_video || media.media_type === 2;
-              
-              if (isVideo) {
-                downloadUrl = media.video_url || media.video_versions?.[0]?.url || '';
-              } else {
-                downloadUrl = thumbnail;
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          console.log('RapidAPI response keys:', Object.keys(apiData));
+          const data = apiData.data || apiData;
+
+          if (data) {
+            // Handle carousel/sidecar posts
+            if (data.carousel_media || data.resources) {
+              const items = data.carousel_media || data.resources || [];
+              const first = items[0];
+              if (first) {
+                thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || '';
+                isVideo = first.video_url ? true : false;
+                downloadUrl = first.video_url || thumbnail;
               }
             }
+
+            // Single media
+            if (!thumbnail) {
+              thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || '';
+              isVideo = !!data.video_url || data.media_type === 2 || data.is_video;
+              downloadUrl = data.video_url || data.video_versions?.[0]?.url || thumbnail;
+            }
+
+            title = data.caption?.text || data.accessibility_caption || '';
           }
+        } else {
+          console.log('RapidAPI error status:', apiRes.status, await apiRes.text());
         }
       } catch (e) {
-        console.log('GraphQL method failed:', e);
+        console.log('RapidAPI method failed:', e);
       }
     }
 
-    // Method 2: Try oEmbed (gets thumbnail at least)
+    // Method 2: Fallback to oEmbed
     if (!thumbnail) {
       try {
         const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
@@ -100,7 +109,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Method 3: Fetch page and parse OG tags
+    // Method 3: Fallback to OG tags
     if (!thumbnail) {
       try {
         const pageRes = await fetch(url, {
@@ -137,12 +146,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    // If we still have nothing, return an error
     if (!thumbnail && !downloadUrl) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'Could not extract media. Instagram may be blocking the request. Try again or use a different link.',
+          error: 'Could not extract media. Try again or use a different link.',
         }),
         { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
