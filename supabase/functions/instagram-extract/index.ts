@@ -23,152 +23,109 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-function extractFromHTML(html: string): MediaResult | null {
-  let thumbnail = '';
-  let downloadUrl = '';
-  let isVideo = false;
-  let title = '';
+// Method 1: Instagram JSON API (?__a=1&__d=dis)
+async function tryJsonAPI(url: string): Promise<MediaResult | null> {
+  const shortcode = extractShortcode(url);
+  if (!shortcode) return null;
 
-  // OG meta tags (various attribute orders)
-  const ogPatterns = [
-    /property="og:image"\s+content="([^"]+)"/i,
-    /content="([^"]+)"\s+property="og:image"/i,
-    /name="og:image"\s+content="([^"]+)"/i,
-    /property="og:image"\s*\/?\s*content="([^"]+)"/i,
-  ];
-  for (const p of ogPatterns) {
-    const m = html.match(p);
-    if (m) { thumbnail = m[1].replace(/&amp;/g, '&'); downloadUrl = thumbnail; break; }
-  }
-
-  const ogVideoPatterns = [
-    /property="og:video(?::url|:secure_url)?"\s+content="([^"]+)"/i,
-    /content="([^"]+)"\s+property="og:video(?::url|:secure_url)?"/i,
-  ];
-  for (const p of ogVideoPatterns) {
-    const m = html.match(p);
-    if (m) { downloadUrl = m[1].replace(/&amp;/g, '&'); isVideo = true; break; }
-  }
-
-  const titlePatterns = [
-    /property="og:(?:title|description)"\s+content="([^"]+)"/i,
-    /content="([^"]+)"\s+property="og:(?:title|description)"/i,
-  ];
-  for (const p of titlePatterns) {
-    const m = html.match(p);
-    if (m) { title = m[1]; break; }
-  }
-
-  // JSON-LD structured data
-  if (!thumbnail) {
-    const jsonLd = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
-    if (jsonLd) {
-      try {
-        const ld = JSON.parse(jsonLd[1]);
-        if (ld.image) thumbnail = Array.isArray(ld.image) ? ld.image[0] : ld.image;
-        if (ld.video?.contentUrl) { downloadUrl = ld.video.contentUrl; isVideo = true; }
-        if (ld.name) title = ld.name;
-        if (ld.description && !title) title = ld.description;
-      } catch {}
-    }
-  }
-
-  // Instagram-specific JSON in page source
-  if (!isVideo) {
-    const videoUrl = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-    if (videoUrl) { downloadUrl = videoUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/'); isVideo = true; }
-  }
-  if (!thumbnail) {
-    const displayUrl = html.match(/"display_url"\s*:\s*"([^"]+)"/);
-    if (displayUrl) { thumbnail = displayUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/'); if (!downloadUrl) downloadUrl = thumbnail; }
-  }
-  if (!thumbnail) {
-    const thumbSrc = html.match(/"thumbnail_src"\s*:\s*"([^"]+)"/);
-    if (thumbSrc) { thumbnail = thumbSrc[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/'); if (!downloadUrl) downloadUrl = thumbnail; }
-  }
-
-  // Image src tags
-  if (!thumbnail) {
-    const imgSrc = html.match(/src="(https:\/\/(?:scontent|instagram)[^"]*\.(?:jpg|jpeg|png)[^"]*)"/i);
-    if (imgSrc) { thumbnail = imgSrc[1].replace(/&amp;/g, '&'); if (!downloadUrl) downloadUrl = thumbnail; }
-  }
-
-  // Twitter card image
-  if (!thumbnail) {
-    const twImg = html.match(/name="twitter:image"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+name="twitter:image"/i);
-    if (twImg) { thumbnail = twImg[1].replace(/&amp;/g, '&'); if (!downloadUrl) downloadUrl = thumbnail; }
-  }
-
-  if (!thumbnail && !downloadUrl) return null;
-  return { thumbnail: thumbnail || downloadUrl, title: title.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
-}
-
-// Method 1: Direct page fetch with Facebook crawler UA
-async function tryDirectFetch(url: string): Promise<MediaResult | null> {
-  const userAgents = [
-    'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-    'Twitterbot/1.0',
-  ];
-
-  for (const ua of userAgents) {
+  // Try both /p/ and /reel/ paths
+  const paths = [`/p/${shortcode}`, `/reel/${shortcode}`];
+  
+  for (const path of paths) {
     try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': ua, 'Accept': 'text/html' },
-        redirect: 'follow',
+      const apiUrl = `https://www.instagram.com${path}/?__a=1&__d=dis`;
+      const res = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': 'Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100)',
+          'Accept': '*/*',
+          'X-IG-App-ID': '936619743392459',
+        },
       });
+
+      console.log(`JSON API ${path} status:`, res.status);
       if (!res.ok) continue;
-      const html = await res.text();
-      console.log(`DirectFetch (${ua.substring(0, 20)}): HTML length ${html.length}`);
-      const result = extractFromHTML(html);
-      if (result) return result;
+
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('json')) {
+        console.log('JSON API: not JSON response');
+        continue;
+      }
+
+      const data = await res.json();
+      const items = data?.items || data?.graphql?.shortcode_media ? [data.graphql.shortcode_media] : [];
+      
+      if (items.length === 0) {
+        // Try nested structure
+        const media = data?.data?.xdt_shortcode_media || data?.graphql?.shortcode_media;
+        if (media) items.push(media);
+      }
+
+      if (items.length > 0) {
+        const item = items[0];
+        const isVideo = item.is_video || item.media_type === 2 || item.video_versions?.length > 0;
+        let thumbnail = item.display_url || item.thumbnail_src || item.image_versions2?.candidates?.[0]?.url || '';
+        let downloadUrl = thumbnail;
+        
+        if (isVideo) {
+          downloadUrl = item.video_url || item.video_versions?.[0]?.url || thumbnail;
+        }
+
+        const caption = item.edge_media_to_caption?.edges?.[0]?.node?.text || item.caption?.text || '';
+
+        if (thumbnail || downloadUrl) {
+          console.log('JSON API: found media');
+          return { thumbnail: thumbnail || downloadUrl, title: caption.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
+        }
+      }
     } catch (e) {
-      console.log(`DirectFetch failed for UA ${ua.substring(0, 20)}:`, e);
+      console.log(`JSON API ${path} failed:`, e);
     }
   }
   return null;
 }
 
-// Method 2: Instagram embed endpoint
-async function tryEmbed(url: string): Promise<MediaResult | null> {
+// Method 2: Mobile i.instagram.com API
+async function tryMobileAPI(url: string): Promise<MediaResult | null> {
   const shortcode = extractShortcode(url);
   if (!shortcode) return null;
 
+  // Convert shortcode to media ID
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let mediaId = BigInt(0);
+  for (const char of shortcode) {
+    mediaId = mediaId * BigInt(64) + BigInt(alphabet.indexOf(char));
+  }
+
   try {
-    const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
-    const res = await fetch(embedUrl, {
+    const res = await fetch(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': 'Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100)',
+        'X-IG-App-ID': '936619743392459',
       },
-      redirect: 'follow',
     });
+
+    console.log('Mobile API status:', res.status);
     if (!res.ok) return null;
 
-    const html = await res.text();
-    console.log('Embed HTML length:', html.length);
-    const result = extractFromHTML(html);
-    if (result) return result;
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) return null;
 
-    // Try finding image in specific embed patterns
-    // Instagram embed uses background-image or img tags with scontent URLs
-    const bgImg = html.match(/background-image:\s*url\(["']?(https:\/\/[^"')]+)["']?\)/i);
-    if (bgImg) {
-      const img = bgImg[1].replace(/&amp;/g, '&');
-      return { thumbnail: img, title: '', downloadUrl: img, isVideo: false };
+    const data = await res.json();
+    const item = data?.items?.[0];
+    if (!item) return null;
+
+    const isVideo = item.media_type === 2 || item.video_versions?.length > 0;
+    const thumbnail = item.image_versions2?.candidates?.[0]?.url || '';
+    const downloadUrl = isVideo ? (item.video_versions?.[0]?.url || thumbnail) : thumbnail;
+    const caption = item.caption?.text || '';
+
+    if (thumbnail || downloadUrl) {
+      console.log('Mobile API: found media');
+      return { thumbnail: thumbnail || downloadUrl, title: caption.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
     }
-
-    // Look for any scontent CDN URL
-    const cdnUrl = html.match(/(https:\/\/scontent[^"'\s\\]+)/i);
-    if (cdnUrl) {
-      const img = cdnUrl[1].replace(/&amp;/g, '&');
-      return { thumbnail: img, title: '', downloadUrl: img, isVideo: false };
-    }
-
     return null;
   } catch (e) {
-    console.log('Embed failed:', e);
+    console.log('Mobile API failed:', e);
     return null;
   }
 }
@@ -182,38 +139,29 @@ async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   try {
     const res = await fetch(`https://${host}/v1/social/autolink`, {
       method: 'POST',
-      headers: {
-        'x-rapidapi-host': host,
-        'x-rapidapi-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-rapidapi-host': host, 'x-rapidapi-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     });
     if (!res.ok) { console.log('RapidAPI error:', res.status); return null; }
-
     const raw = await res.json();
-    console.log('RapidAPI response:', JSON.stringify(raw).substring(0, 300));
+    console.log('RapidAPI:', JSON.stringify(raw).substring(0, 200));
     if (raw.error) return null;
 
-    const medias = raw.medias || raw.data?.medias || [];
+    const medias = raw.medias || [];
     if (Array.isArray(medias) && medias.length > 0) {
       const videos = medias.filter((m: any) => m.type === 'video');
-      const images = medias.filter((m: any) => m.type === 'image');
-      const best = videos.length > 0 ? videos[0] : images[0] || medias[0];
-      const thumbnail = raw.thumbnail || best.thumbnail || best.preview || '';
-      const downloadUrl = best.url || best.download_url || '';
+      const best = videos.length > 0 ? videos[0] : medias[0];
+      const thumbnail = raw.thumbnail || best.thumbnail || '';
+      const downloadUrl = best.url || '';
       if (downloadUrl || thumbnail) {
         return { thumbnail: thumbnail || downloadUrl, title: raw.title || '', downloadUrl: downloadUrl || thumbnail, isVideo: best.type === 'video' };
       }
     }
     return null;
-  } catch (e) {
-    console.log('RapidAPI failed:', e);
-    return null;
-  }
+  } catch (e) { console.log('RapidAPI failed:', e); return null; }
 }
 
-// Method 4: oEmbed
+// Method 4: oEmbed (thumbnail only)
 async function tryOEmbed(url: string): Promise<MediaResult | null> {
   try {
     const res = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`, {
@@ -225,10 +173,7 @@ async function tryOEmbed(url: string): Promise<MediaResult | null> {
     const data = await res.json();
     if (!data.thumbnail_url) return null;
     return { thumbnail: data.thumbnail_url, title: data.title || '', downloadUrl: data.thumbnail_url, isVideo: false };
-  } catch (e) {
-    console.log('oEmbed failed:', e);
-    return null;
-  }
+  } catch (e) { console.log('oEmbed failed:', e); return null; }
 }
 
 Deno.serve(async (req) => {
@@ -249,8 +194,8 @@ Deno.serve(async (req) => {
     let methodUsed = '';
 
     const methods = [
-      { name: 'DirectFetch', fn: () => tryDirectFetch(url) },
-      { name: 'Embed', fn: () => tryEmbed(url) },
+      { name: 'JsonAPI', fn: () => tryJsonAPI(url) },
+      { name: 'MobileAPI', fn: () => tryMobileAPI(url) },
       { name: 'RapidAPI', fn: () => tryRapidAPI(url) },
       { name: 'oEmbed', fn: () => tryOEmbed(url) },
     ];
@@ -270,7 +215,7 @@ Deno.serve(async (req) => {
     console.log('Success via:', methodUsed);
     return new Response(JSON.stringify({
       success: true,
-      data: { url, shortcode, type: mediaType, thumbnail: result.thumbnail, title: result.title.substring(0, 200), downloadUrl: result.downloadUrl || result.thumbnail, isVideo: result.isVideo, method: methodUsed },
+      data: { url, shortcode, type: mediaType, thumbnail: result.thumbnail, title: result.title, downloadUrl: result.downloadUrl || result.thumbnail, isVideo: result.isVideo, method: methodUsed },
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (error) {
     console.error('Extraction error:', error);
