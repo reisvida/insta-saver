@@ -47,7 +47,8 @@ async function tryFirecrawl(url: string): Promise<MediaResult | null> {
     });
 
     if (!response.ok) {
-      console.log('Firecrawl error:', response.status);
+      const errBody = await response.text();
+      console.log('Firecrawl error:', response.status, errBody);
       return null;
     }
 
