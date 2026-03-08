@@ -206,7 +206,7 @@ async function tryRapidAPI(url: string): Promise<MediaResult | null> {
     }
 
     const raw = await res.json();
-    console.log(`RapidAPI response keys:`, JSON.stringify(Object.keys(raw)));
+    console.log(`RapidAPI full response:`, JSON.stringify(raw).substring(0, 500));
 
     // This API returns medias array with url, thumbnail, quality, type
     const medias = raw.medias || raw.data?.medias || [];
