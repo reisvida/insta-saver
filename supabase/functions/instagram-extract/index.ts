@@ -46,6 +46,13 @@ async function tryEmbed(url: string): Promise<MediaResult | null> {
 
     const html = await res.text();
     console.log('Embed HTML length:', html.length);
+    // Debug: log parts of HTML to find media patterns
+    const videoIdx = html.indexOf('video');
+    if (videoIdx > -1) console.log('Embed video context:', html.substring(videoIdx, videoIdx + 300));
+    const imgIdx = html.indexOf('EmbeddedMedia');
+    if (imgIdx > -1) console.log('Embed media context:', html.substring(imgIdx, imgIdx + 500));
+    const srcIdx = html.indexOf('.jpg');
+    if (srcIdx > -1) console.log('Embed jpg context:', html.substring(Math.max(0, srcIdx - 200), srcIdx + 50));
 
     let thumbnail = '';
     let downloadUrl = '';
