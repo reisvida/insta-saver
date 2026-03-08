@@ -23,166 +23,64 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: Firecrawl - scrape Instagram page for OG/meta tags
-async function tryFirecrawl(url: string): Promise<MediaResult | null> {
-  const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
-  if (!apiKey) {
-    console.log('FIRECRAWL_API_KEY not configured');
-    return null;
-  }
+// Method 1: Instagram GraphQL API (No cookie needed)
+async function tryGraphQL(url: string): Promise<MediaResult | null> {
+  const shortcode = extractShortcode(url);
+  if (!shortcode) return null;
 
   try {
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+    const graphqlUrl = new URL('https://www.instagram.com/api/graphql');
+    const params = new URLSearchParams();
+    params.set('variables', JSON.stringify({ shortcode }));
+    params.set('doc_id', '10015901848480474');
+    params.set('lsd', 'AVqbxe3J_YA');
+
+    const res = await fetch(graphqlUrl.toString(), {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-IG-App-ID': '936619743392459',
+        'X-FB-LSD': 'AVqbxe3J_YA',
+        'X-ASBD-ID': '129477',
+        'Sec-Fetch-Site': 'same-origin',
       },
-      body: JSON.stringify({
-        url,
-        formats: ['html'],
-        onlyMainContent: false,
-        waitFor: 2000,
-      }),
+      body: params.toString(),
     });
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.log('Firecrawl error:', response.status, errBody);
+    console.log('GraphQL status:', res.status);
+    if (!res.ok) return null;
+
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) {
+      console.log('GraphQL: non-JSON response');
       return null;
     }
 
-    const result = await response.json();
-    const html = result.data?.html || result.html || '';
-    if (!html) {
-      console.log('Firecrawl: no HTML returned');
+    const json = await res.json();
+    const media = json?.data?.xdt_shortcode_media;
+    if (!media) {
+      console.log('GraphQL: no xdt_shortcode_media found');
       return null;
     }
 
-    console.log('Firecrawl: got HTML, length:', html.length);
+    const isVideo = media.is_video || false;
+    const thumbnail = media.display_url || media.thumbnail_src || '';
+    const downloadUrl = isVideo ? (media.video_url || thumbnail) : thumbnail;
+    const caption = media.edge_media_to_caption?.edges?.[0]?.node?.text || '';
 
-    let thumbnail = '';
-    let downloadUrl = '';
-    let isVideo = false;
-    let title = '';
-
-    // Extract OG tags
-    const ogImage = html.match(/property="og:image"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:image"/i);
-    if (ogImage) {
-      thumbnail = ogImage[1].replace(/&amp;/g, '&');
-      downloadUrl = thumbnail;
+    if (thumbnail || downloadUrl) {
+      console.log('GraphQL: found media, isVideo:', isVideo);
+      return { thumbnail: thumbnail || downloadUrl, title: caption.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
     }
-
-    const ogVideo = html.match(/property="og:video(?::url)?"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:video(?::url)?"/i);
-    if (ogVideo) {
-      downloadUrl = ogVideo[1].replace(/&amp;/g, '&');
-      isVideo = true;
-    }
-
-    const ogTitle = html.match(/property="og:(?:title|description)"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:(?:title|description)"/i);
-    if (ogTitle) title = ogTitle[1];
-
-    // Also try to find video URLs in the page source
-    if (!isVideo) {
-      const videoUrl = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-      if (videoUrl) {
-        downloadUrl = videoUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-        isVideo = true;
-      }
-    }
-
-    // Try to find display_url for images
-    if (!thumbnail) {
-      const displayUrl = html.match(/"display_url"\s*:\s*"([^"]+)"/);
-      if (displayUrl) {
-        thumbnail = displayUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-        if (!downloadUrl) downloadUrl = thumbnail;
-      }
-    }
-
-    if (!thumbnail && !downloadUrl) return null;
-    return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+    return null;
   } catch (e) {
-    console.log('Firecrawl failed:', e);
+    console.log('GraphQL failed:', e);
     return null;
   }
 }
 
-// Method 2: Instagram oEmbed (free, no key needed)
-async function tryOEmbed(url: string): Promise<MediaResult | null> {
-  try {
-    const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
-    const res = await fetch(oembedUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-      },
-    });
-
-    if (!res.ok) return null;
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('json')) return null;
-
-    const data = await res.json();
-    const thumbnail = data.thumbnail_url || '';
-    if (!thumbnail) return null;
-
-    return { thumbnail, title: data.title || '', downloadUrl: thumbnail, isVideo: false };
-  } catch (e) {
-    console.log('oEmbed failed:', e);
-    return null;
-  }
-}
-
-// Method 3: Direct OG Tags scraping (free, no key needed)
-async function tryOGTags(url: string): Promise<MediaResult | null> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-        'Accept': 'text/html',
-      },
-      redirect: 'follow',
-    });
-
-    if (!res.ok) return null;
-
-    const html = await res.text();
-    let thumbnail = '';
-    let downloadUrl = '';
-    let isVideo = false;
-    let title = '';
-
-    const ogImage = html.match(/property="og:image"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:image"/i);
-    if (ogImage) {
-      thumbnail = ogImage[1].replace(/&amp;/g, '&');
-      downloadUrl = thumbnail;
-    }
-
-    const ogVideo = html.match(/property="og:video"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:video"/i);
-    if (ogVideo) {
-      downloadUrl = ogVideo[1].replace(/&amp;/g, '&');
-      isVideo = true;
-    }
-
-    const ogTitle = html.match(/property="og:title"\s+content="([^"]+)"/i)
-      || html.match(/content="([^"]+)"\s+property="og:title"/i);
-    if (ogTitle) title = ogTitle[1];
-
-    if (!thumbnail && !downloadUrl) return null;
-    return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
-  } catch (e) {
-    console.log('OG tags failed:', e);
-    return null;
-  }
-}
-
-// Method 4: Social Download All In One (RapidAPI)
+// Method 2: RapidAPI Social Download All In One
 async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   const apiKey = Deno.env.get('RAPIDAPI_KEY');
   if (!apiKey) return null;
@@ -191,53 +89,40 @@ async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   try {
     const res = await fetch(`https://${host}/v1/social/autolink`, {
       method: 'POST',
-      headers: {
-        'x-rapidapi-host': host,
-        'x-rapidapi-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-rapidapi-host': host, 'x-rapidapi-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.log(`RapidAPI ${host} error:`, res.status, errText);
-      return null;
-    }
-
+    if (!res.ok) { console.log('RapidAPI error:', res.status); return null; }
     const raw = await res.json();
-    console.log(`RapidAPI response keys:`, JSON.stringify(Object.keys(raw)));
+    if (raw.error) { console.log('RapidAPI error:', raw.message); return null; }
 
-    // This API returns medias array with url, thumbnail, quality, type
-    const medias = raw.medias || raw.data?.medias || [];
+    const medias = raw.medias || [];
     if (Array.isArray(medias) && medias.length > 0) {
-      // Pick the best quality video or image
       const videos = medias.filter((m: any) => m.type === 'video');
-      const images = medias.filter((m: any) => m.type === 'image');
-      const best = videos.length > 0 ? videos[0] : images[0] || medias[0];
-      
-      const thumbnail = raw.thumbnail || best.thumbnail || best.preview || '';
-      const downloadUrl = best.url || best.download_url || '';
-      const isVideo = best.type === 'video';
-      const title = raw.title || raw.caption || '';
-      
+      const best = videos.length > 0 ? videos[0] : medias[0];
+      const thumbnail = raw.thumbnail || best.thumbnail || '';
+      const downloadUrl = best.url || '';
       if (downloadUrl || thumbnail) {
-        return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+        return { thumbnail: thumbnail || downloadUrl, title: raw.title || '', downloadUrl: downloadUrl || thumbnail, isVideo: best.type === 'video' };
       }
     }
-
-    // Single object response
-    const thumbnail = raw.thumbnail || raw.image || '';
-    const downloadUrl = raw.url || raw.download_url || '';
-    if (downloadUrl || thumbnail) {
-      return { thumbnail: thumbnail || downloadUrl, title: raw.title || '', downloadUrl: downloadUrl || thumbnail, isVideo: !!raw.video };
-    }
-
     return null;
-  } catch (e) {
-    console.log(`RapidAPI failed:`, e);
-    return null;
-  }
+  } catch (e) { console.log('RapidAPI failed:', e); return null; }
+}
+
+// Method 3: oEmbed (thumbnail only fallback)
+async function tryOEmbed(url: string): Promise<MediaResult | null> {
+  try {
+    const res = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) return null;
+    const data = await res.json();
+    if (!data.thumbnail_url) return null;
+    return { thumbnail: data.thumbnail_url, title: data.title || '', downloadUrl: data.thumbnail_url, isVideo: false };
+  } catch (e) { console.log('oEmbed failed:', e); return null; }
 }
 
 Deno.serve(async (req) => {
@@ -247,76 +132,42 @@ Deno.serve(async (req) => {
 
   try {
     const { url } = await req.json();
-
     if (!url) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'URL is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: false, error: 'URL is required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     const shortcode = extractShortcode(url);
     const mediaType = detectType(url);
-
     let result: MediaResult | null = null;
     let methodUsed = '';
 
-    // Fallback chain
-    console.log('Trying Firecrawl...');
-    result = await tryFirecrawl(url);
-    if (result) methodUsed = 'Firecrawl';
+    const methods = [
+      { name: 'GraphQL', fn: () => tryGraphQL(url) },
+      { name: 'RapidAPI', fn: () => tryRapidAPI(url) },
+      { name: 'oEmbed', fn: () => tryOEmbed(url) },
+    ];
 
-    if (!result) {
-      console.log('Trying RapidAPI...');
-      result = await tryRapidAPI(url);
-      if (result) methodUsed = 'RapidAPI';
-    }
-
-    if (!result) {
-      console.log('Trying oEmbed...');
-      result = await tryOEmbed(url);
-      if (result) methodUsed = 'oEmbed';
-    }
-
-    if (!result) {
-      console.log('Trying OG tags...');
-      result = await tryOGTags(url);
-      if (result) methodUsed = 'OGTags';
+    for (const method of methods) {
+      console.log(`Trying ${method.name}...`);
+      result = await method.fn();
+      if (result) { methodUsed = method.name; break; }
     }
 
     if (!result) {
       return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Could not extract media. Try again or use a different link.',
-        }),
-        { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+        JSON.stringify({ success: false, error: 'Could not extract media. Try again or use a different link.' }),
+        { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    console.log('Extraction successful via:', methodUsed);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        data: {
-          url,
-          shortcode,
-          type: mediaType,
-          thumbnail: result.thumbnail,
-          title: result.title.substring(0, 200),
-          downloadUrl: result.downloadUrl || result.thumbnail,
-          isVideo: result.isVideo,
-          method: methodUsed,
-        },
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    console.log('Success via:', methodUsed);
+    return new Response(JSON.stringify({
+      success: true,
+      data: { url, shortcode, type: mediaType, thumbnail: result.thumbnail, title: result.title, downloadUrl: result.downloadUrl || result.thumbnail, isVideo: result.isVideo, method: methodUsed },
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (error) {
     console.error('Extraction error:', error);
-    return new Response(
-      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Extraction failed' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Extraction failed' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
