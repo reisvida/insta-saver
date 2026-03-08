@@ -268,9 +268,9 @@ Deno.serve(async (req) => {
 
     // Fallback chain: try each method in order
     if (rapidApiKey) {
-      console.log('Trying ScraperAPI2...');
-      result = await tryScraperAPI2(url, rapidApiKey);
-      if (result) methodUsed = 'ScraperAPI2';
+      console.log('Trying ScraperStable...');
+      result = await tryScraperStable(url, rapidApiKey);
+      if (result) methodUsed = 'ScraperStable';
 
       if (!result) {
         console.log('Trying Looter2...');
