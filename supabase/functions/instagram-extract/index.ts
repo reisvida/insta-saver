@@ -23,13 +23,13 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: RapidAPI Instagram Scraper API2
+// Method 1: RapidAPI Instagram Scraper 2023
 async function tryScraperAPI2(url: string, apiKey: string): Promise<MediaResult | null> {
   try {
-    const apiUrl = `https://instagram-scraper-api2.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
+    const apiUrl = `https://instagram-scraper-2023.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
     const res = await fetch(apiUrl, {
       headers: {
-        'x-rapidapi-host': 'instagram-scraper-api2.p.rapidapi.com',
+        'x-rapidapi-host': 'instagram-scraper-2023.p.rapidapi.com',
         'x-rapidapi-key': apiKey,
       },
     });
