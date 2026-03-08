@@ -23,54 +23,107 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: RapidAPI Instagram Scraper 2023 (user subscribed)
-async function tryScraperStable(url: string, apiKey: string): Promise<MediaResult | null> {
-  // Try Instagram Scraper 2023 first (user's subscribed API)
-  const hosts = [
-    'instagram-scraper-2023.p.rapidapi.com',
-    'instagram-scraper-stable-api.p.rapidapi.com',
-  ];
+// Method 1: All-in-One Instagram Downloader API (SaverAPI)
+async function tryAllInOneDownloader(url: string, apiKey: string): Promise<MediaResult | null> {
+  const host = 'all-in-one-instagram-downloader-api.p.rapidapi.com';
   
-  for (const host of hosts) {
-    try {
-      const shortcode = extractShortcode(url);
-      if (!shortcode) return null;
+  // Try POST with JSON body
+  try {
+    const res = await fetch(`https://${host}/v1/social/autolink`, {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': host,
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    });
 
-      // Try multiple endpoint patterns
-      const endpoints = [
-        `https://${host}/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`,
-        `https://${host}/get_post_data.php?post_code=${shortcode}`,
-        `https://${host}/media?shortcode=${shortcode}`,
-      ];
-
-      for (const endpoint of endpoints) {
-        try {
-          const res = await fetch(endpoint, {
-            headers: {
-              'x-rapidapi-host': host,
-              'x-rapidapi-key': apiKey,
-            },
-          });
-
-          if (!res.ok) {
-            console.log(`${host} ${endpoint.split('/').pop()} error:`, res.status);
-            if (res.status === 403) break; // Not subscribed to this host, skip remaining endpoints
-            continue;
-          }
-
-          const raw = await res.json();
-          console.log(`${host} response keys:`, JSON.stringify(Object.keys(raw)));
-          const result = parseGenericMediaResponse(raw);
-          if (result) return result;
-        } catch (e) {
-          console.log(`${host} endpoint failed:`, e);
-          continue;
-        }
-      }
-    } catch (e) {
-      console.log(`Host ${host} failed:`, e);
-      continue;
+    if (res.ok) {
+      const raw = await res.json();
+      console.log('AllInOne v1/social/autolink response keys:', JSON.stringify(Object.keys(raw)));
+      const result = parseDownloaderResponse(raw);
+      if (result) return result;
+    } else {
+      console.log('AllInOne v1/social/autolink error:', res.status);
     }
+  } catch (e) {
+    console.log('AllInOne v1 failed:', e);
+  }
+
+  // Try GET with url param
+  try {
+    const res = await fetch(`https://${host}/download?url=${encodeURIComponent(url)}`, {
+      headers: {
+        'x-rapidapi-host': host,
+        'x-rapidapi-key': apiKey,
+      },
+    });
+
+    if (res.ok) {
+      const raw = await res.json();
+      console.log('AllInOne /download response keys:', JSON.stringify(Object.keys(raw)));
+      const result = parseDownloaderResponse(raw);
+      if (result) return result;
+    } else {
+      console.log('AllInOne /download error:', res.status);
+    }
+  } catch (e) {
+    console.log('AllInOne /download failed:', e);
+  }
+
+  // Try POST with form-urlencoded  
+  try {
+    const res = await fetch(`https://${host}/`, {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': host,
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `url=${encodeURIComponent(url)}`,
+    });
+
+    if (res.ok) {
+      const raw = await res.json();
+      console.log('AllInOne root POST response keys:', JSON.stringify(Object.keys(raw)));
+      const result = parseDownloaderResponse(raw);
+      if (result) return result;
+    } else {
+      console.log('AllInOne root POST error:', res.status);
+    }
+  } catch (e) {
+    console.log('AllInOne root failed:', e);
+  }
+
+  return null;
+}
+
+function parseDownloaderResponse(raw: any): MediaResult | null {
+  // Handle various downloader API response formats
+  const data = raw.data || raw.result || raw.medias || raw;
+  
+  // Array of media items
+  const items = Array.isArray(data) ? data : (data?.medias || data?.media || data?.links || data?.downloads || null);
+  if (items && Array.isArray(items) && items.length > 0) {
+    const first = items[0];
+    const thumbnail = first.thumbnail || first.preview || first.image || first.thumb || '';
+    const isVideo = first.type === 'video' || !!first.video || /video/i.test(first.quality || '') || /\.mp4/i.test(first.url || '');
+    const downloadUrl = first.url || first.download_url || first.video || first.link || '';
+    const title = raw.title || raw.caption || data.title || '';
+    if (downloadUrl || thumbnail) {
+      return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+    }
+  }
+
+  // Single media response
+  const thumbnail = data?.thumbnail || data?.image || data?.preview || data?.thumb || '';
+  const downloadUrl = data?.url || data?.download_url || data?.video || data?.link || '';
+  const isVideo = !!data?.video || data?.type === 'video' || /\.mp4/i.test(downloadUrl);
+  const title = data?.title || data?.caption || raw?.title || '';
+  
+  if (downloadUrl || thumbnail) {
+    return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
   }
   return null;
 }
