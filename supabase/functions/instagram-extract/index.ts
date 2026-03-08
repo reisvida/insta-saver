@@ -23,114 +23,64 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: Instagram JSON API (?__a=1&__d=dis)
-async function tryJsonAPI(url: string): Promise<MediaResult | null> {
+// Method 1: Instagram GraphQL API (No cookie needed)
+async function tryGraphQL(url: string): Promise<MediaResult | null> {
   const shortcode = extractShortcode(url);
   if (!shortcode) return null;
-
-  // Try both /p/ and /reel/ paths
-  const paths = [`/p/${shortcode}`, `/reel/${shortcode}`];
-  
-  for (const path of paths) {
-    try {
-      const apiUrl = `https://www.instagram.com${path}/?__a=1&__d=dis`;
-      const res = await fetch(apiUrl, {
-        headers: {
-          'User-Agent': 'Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100)',
-          'Accept': '*/*',
-          'X-IG-App-ID': '936619743392459',
-        },
-      });
-
-      console.log(`JSON API ${path} status:`, res.status);
-      if (!res.ok) continue;
-
-      const ct = res.headers.get('content-type') || '';
-      if (!ct.includes('json')) {
-        console.log('JSON API: not JSON response');
-        continue;
-      }
-
-      const data = await res.json();
-      const items = data?.items || data?.graphql?.shortcode_media ? [data.graphql.shortcode_media] : [];
-      
-      if (items.length === 0) {
-        // Try nested structure
-        const media = data?.data?.xdt_shortcode_media || data?.graphql?.shortcode_media;
-        if (media) items.push(media);
-      }
-
-      if (items.length > 0) {
-        const item = items[0];
-        const isVideo = item.is_video || item.media_type === 2 || item.video_versions?.length > 0;
-        let thumbnail = item.display_url || item.thumbnail_src || item.image_versions2?.candidates?.[0]?.url || '';
-        let downloadUrl = thumbnail;
-        
-        if (isVideo) {
-          downloadUrl = item.video_url || item.video_versions?.[0]?.url || thumbnail;
-        }
-
-        const caption = item.edge_media_to_caption?.edges?.[0]?.node?.text || item.caption?.text || '';
-
-        if (thumbnail || downloadUrl) {
-          console.log('JSON API: found media');
-          return { thumbnail: thumbnail || downloadUrl, title: caption.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
-        }
-      }
-    } catch (e) {
-      console.log(`JSON API ${path} failed:`, e);
-    }
-  }
-  return null;
-}
-
-// Method 2: Mobile i.instagram.com API
-async function tryMobileAPI(url: string): Promise<MediaResult | null> {
-  const shortcode = extractShortcode(url);
-  if (!shortcode) return null;
-
-  // Convert shortcode to media ID
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  let mediaId = BigInt(0);
-  for (const char of shortcode) {
-    mediaId = mediaId * BigInt(64) + BigInt(alphabet.indexOf(char));
-  }
 
   try {
-    const res = await fetch(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, {
+    const graphqlUrl = new URL('https://www.instagram.com/api/graphql');
+    const params = new URLSearchParams();
+    params.set('variables', JSON.stringify({ shortcode }));
+    params.set('doc_id', '10015901848480474');
+    params.set('lsd', 'AVqbxe3J_YA');
+
+    const res = await fetch(graphqlUrl.toString(), {
+      method: 'POST',
       headers: {
-        'User-Agent': 'Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'X-IG-App-ID': '936619743392459',
+        'X-FB-LSD': 'AVqbxe3J_YA',
+        'X-ASBD-ID': '129477',
+        'Sec-Fetch-Site': 'same-origin',
       },
+      body: params.toString(),
     });
 
-    console.log('Mobile API status:', res.status);
+    console.log('GraphQL status:', res.status);
     if (!res.ok) return null;
 
     const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('json')) return null;
+    if (!ct.includes('json')) {
+      console.log('GraphQL: non-JSON response');
+      return null;
+    }
 
-    const data = await res.json();
-    const item = data?.items?.[0];
-    if (!item) return null;
+    const json = await res.json();
+    const media = json?.data?.xdt_shortcode_media;
+    if (!media) {
+      console.log('GraphQL: no xdt_shortcode_media found');
+      return null;
+    }
 
-    const isVideo = item.media_type === 2 || item.video_versions?.length > 0;
-    const thumbnail = item.image_versions2?.candidates?.[0]?.url || '';
-    const downloadUrl = isVideo ? (item.video_versions?.[0]?.url || thumbnail) : thumbnail;
-    const caption = item.caption?.text || '';
+    const isVideo = media.is_video || false;
+    const thumbnail = media.display_url || media.thumbnail_src || '';
+    const downloadUrl = isVideo ? (media.video_url || thumbnail) : thumbnail;
+    const caption = media.edge_media_to_caption?.edges?.[0]?.node?.text || '';
 
     if (thumbnail || downloadUrl) {
-      console.log('Mobile API: found media');
+      console.log('GraphQL: found media, isVideo:', isVideo);
       return { thumbnail: thumbnail || downloadUrl, title: caption.substring(0, 200), downloadUrl: downloadUrl || thumbnail, isVideo };
     }
     return null;
   } catch (e) {
-    console.log('Mobile API failed:', e);
+    console.log('GraphQL failed:', e);
     return null;
   }
 }
 
-// Method 3: RapidAPI
+// Method 2: RapidAPI Social Download All In One
 async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   const apiKey = Deno.env.get('RAPIDAPI_KEY');
   if (!apiKey) return null;
@@ -144,8 +94,7 @@ async function tryRapidAPI(url: string): Promise<MediaResult | null> {
     });
     if (!res.ok) { console.log('RapidAPI error:', res.status); return null; }
     const raw = await res.json();
-    console.log('RapidAPI:', JSON.stringify(raw).substring(0, 200));
-    if (raw.error) return null;
+    if (raw.error) { console.log('RapidAPI error:', raw.message); return null; }
 
     const medias = raw.medias || [];
     if (Array.isArray(medias) && medias.length > 0) {
@@ -161,7 +110,7 @@ async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   } catch (e) { console.log('RapidAPI failed:', e); return null; }
 }
 
-// Method 4: oEmbed (thumbnail only)
+// Method 3: oEmbed (thumbnail only fallback)
 async function tryOEmbed(url: string): Promise<MediaResult | null> {
   try {
     const res = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`, {
@@ -194,8 +143,7 @@ Deno.serve(async (req) => {
     let methodUsed = '';
 
     const methods = [
-      { name: 'JsonAPI', fn: () => tryJsonAPI(url) },
-      { name: 'MobileAPI', fn: () => tryMobileAPI(url) },
+      { name: 'GraphQL', fn: () => tryGraphQL(url) },
       { name: 'RapidAPI', fn: () => tryRapidAPI(url) },
       { name: 'oEmbed', fn: () => tryOEmbed(url) },
     ];
