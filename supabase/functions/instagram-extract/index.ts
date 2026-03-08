@@ -23,32 +23,56 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: RapidAPI Instagram Scraper Stable API
+// Method 1: RapidAPI Instagram Scraper 2023 (user subscribed)
 async function tryScraperStable(url: string, apiKey: string): Promise<MediaResult | null> {
-  try {
-    const shortcode = extractShortcode(url);
-    if (!shortcode) return null;
+  // Try Instagram Scraper 2023 first (user's subscribed API)
+  const hosts = [
+    'instagram-scraper-2023.p.rapidapi.com',
+    'instagram-scraper-stable-api.p.rapidapi.com',
+  ];
+  
+  for (const host of hosts) {
+    try {
+      const shortcode = extractShortcode(url);
+      if (!shortcode) return null;
 
-    const apiUrl = `https://instagram-scraper-stable-api.p.rapidapi.com/get_post_data.php?post_code=${shortcode}`;
-    const res = await fetch(apiUrl, {
-      headers: {
-        'x-rapidapi-host': 'instagram-scraper-stable-api.p.rapidapi.com',
-        'x-rapidapi-key': apiKey,
-      },
-    });
+      // Try multiple endpoint patterns
+      const endpoints = [
+        `https://${host}/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`,
+        `https://${host}/get_post_data.php?post_code=${shortcode}`,
+        `https://${host}/media?shortcode=${shortcode}`,
+      ];
 
-    if (!res.ok) {
-      console.log('ScraperStable error:', res.status);
-      return null;
+      for (const endpoint of endpoints) {
+        try {
+          const res = await fetch(endpoint, {
+            headers: {
+              'x-rapidapi-host': host,
+              'x-rapidapi-key': apiKey,
+            },
+          });
+
+          if (!res.ok) {
+            console.log(`${host} ${endpoint.split('/').pop()} error:`, res.status);
+            if (res.status === 403) break; // Not subscribed to this host, skip remaining endpoints
+            continue;
+          }
+
+          const raw = await res.json();
+          console.log(`${host} response keys:`, JSON.stringify(Object.keys(raw)));
+          const result = parseGenericMediaResponse(raw);
+          if (result) return result;
+        } catch (e) {
+          console.log(`${host} endpoint failed:`, e);
+          continue;
+        }
+      }
+    } catch (e) {
+      console.log(`Host ${host} failed:`, e);
+      continue;
     }
-
-    const raw = await res.json();
-    console.log('ScraperStable response keys:', JSON.stringify(Object.keys(raw)));
-    return parseGenericMediaResponse(raw);
-  } catch (e) {
-    console.log('ScraperStable failed:', e);
-    return null;
   }
+  return null;
 }
 
 function parseGenericMediaResponse(raw: any): MediaResult | null {
