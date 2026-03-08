@@ -16,6 +16,226 @@ function detectType(url: string): string {
   return "Post";
 }
 
+interface MediaResult {
+  thumbnail: string;
+  title: string;
+  downloadUrl: string;
+  isVideo: boolean;
+}
+
+// Method 1: RapidAPI Instagram Scraper API2
+async function tryScraperAPI2(url: string, apiKey: string): Promise<MediaResult | null> {
+  try {
+    const apiUrl = `https://instagram-scraper-api2.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
+    const res = await fetch(apiUrl, {
+      headers: {
+        'x-rapidapi-host': 'instagram-scraper-api2.p.rapidapi.com',
+        'x-rapidapi-key': apiKey,
+      },
+    });
+
+    if (!res.ok) {
+      console.log('ScraperAPI2 error:', res.status);
+      return null;
+    }
+
+    const apiData = await res.json();
+    const data = apiData.data || apiData;
+    if (!data) return null;
+
+    let thumbnail = '';
+    let downloadUrl = '';
+    let isVideo = false;
+    let title = '';
+
+    // Carousel
+    if (data.carousel_media || data.resources) {
+      const first = (data.carousel_media || data.resources)?.[0];
+      if (first) {
+        thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || '';
+        isVideo = !!first.video_url;
+        downloadUrl = first.video_url || thumbnail;
+      }
+    }
+
+    // Single media
+    if (!thumbnail) {
+      thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || '';
+      isVideo = !!data.video_url || data.media_type === 2 || data.is_video;
+      downloadUrl = data.video_url || data.video_versions?.[0]?.url || thumbnail;
+    }
+
+    title = data.caption?.text || data.accessibility_caption || '';
+
+    if (!thumbnail && !downloadUrl) return null;
+    return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+  } catch (e) {
+    console.log('ScraperAPI2 failed:', e);
+    return null;
+  }
+}
+
+// Method 2: RapidAPI Instagram Looter2
+async function tryLooter2(url: string, apiKey: string): Promise<MediaResult | null> {
+  try {
+    const res = await fetch('https://instagram-looter2.p.rapidapi.com/post-dl', {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': 'instagram-looter2.p.rapidapi.com',
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ link: url }),
+    });
+
+    if (!res.ok) {
+      console.log('Looter2 error:', res.status);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log('Looter2 response keys:', Object.keys(data));
+
+    // Looter2 typically returns an array of media items
+    const items = data.data || data.media || data.result || data;
+    if (Array.isArray(items) && items.length > 0) {
+      const first = items[0];
+      const thumbnail = first.thumbnail || first.image || first.url || '';
+      const isVideo = first.type === 'video' || !!first.video;
+      const downloadUrl = first.video || first.url || first.download_url || thumbnail;
+      return { thumbnail, title: data.title || data.caption || '', downloadUrl, isVideo };
+    }
+
+    // Single object response
+    if (data.thumbnail || data.image || data.download_url) {
+      const thumbnail = data.thumbnail || data.image || '';
+      const isVideo = data.type === 'video' || !!data.video;
+      const downloadUrl = data.video || data.download_url || data.url || thumbnail;
+      return { thumbnail, title: data.title || data.caption || '', downloadUrl, isVideo };
+    }
+
+    return null;
+  } catch (e) {
+    console.log('Looter2 failed:', e);
+    return null;
+  }
+}
+
+// Method 3: RapidAPI SaveFrom Downloader
+async function trySaveFrom(url: string, apiKey: string): Promise<MediaResult | null> {
+  try {
+    const res = await fetch(`https://savefrom-downloader.p.rapidapi.com/smdown`, {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': 'savefrom-downloader.p.rapidapi.com',
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    });
+
+    if (!res.ok) {
+      console.log('SaveFrom error:', res.status);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log('SaveFrom response keys:', Object.keys(data));
+
+    const links = data.data?.links || data.links || [];
+    const thumbnail = data.data?.thumbnail || data.thumbnail || data.data?.image || '';
+    const title = data.data?.title || data.title || '';
+
+    if (links.length > 0) {
+      // Pick highest quality link
+      const best = links.sort((a: any, b: any) => (b.quality_number || 0) - (a.quality_number || 0))[0];
+      const downloadUrl = best?.url || best?.link || '';
+      const isVideo = best?.type?.includes('video') || /\.mp4/i.test(downloadUrl);
+      return { thumbnail: thumbnail || downloadUrl, title, downloadUrl, isVideo };
+    }
+
+    if (thumbnail) {
+      return { thumbnail, title, downloadUrl: thumbnail, isVideo: false };
+    }
+
+    return null;
+  } catch (e) {
+    console.log('SaveFrom failed:', e);
+    return null;
+  }
+}
+
+// Method 4: Instagram oEmbed
+async function tryOEmbed(url: string): Promise<MediaResult | null> {
+  try {
+    const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
+    const res = await fetch(oembedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+      },
+    });
+
+    if (!res.ok) return null;
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('json')) return null;
+
+    const data = await res.json();
+    const thumbnail = data.thumbnail_url || '';
+    if (!thumbnail) return null;
+
+    return { thumbnail, title: data.title || '', downloadUrl: thumbnail, isVideo: false };
+  } catch (e) {
+    console.log('oEmbed failed:', e);
+    return null;
+  }
+}
+
+// Method 5: OG Tags scraping
+async function tryOGTags(url: string): Promise<MediaResult | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+        'Accept': 'text/html',
+      },
+      redirect: 'follow',
+    });
+
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    let thumbnail = '';
+    let downloadUrl = '';
+    let isVideo = false;
+    let title = '';
+
+    const ogImage = html.match(/property="og:image"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:image"/i);
+    if (ogImage) {
+      thumbnail = ogImage[1].replace(/&amp;/g, '&');
+      downloadUrl = thumbnail;
+    }
+
+    const ogVideo = html.match(/property="og:video"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:video"/i);
+    if (ogVideo) {
+      downloadUrl = ogVideo[1].replace(/&amp;/g, '&');
+      isVideo = true;
+    }
+
+    const ogTitle = html.match(/property="og:title"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:title"/i);
+    if (ogTitle) title = ogTitle[1];
+
+    if (!thumbnail && !downloadUrl) return null;
+    return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+  } catch (e) {
+    console.log('OG tags failed:', e);
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -35,118 +255,41 @@ Deno.serve(async (req) => {
     const mediaType = detectType(url);
     const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
 
-    let thumbnail = '';
-    let title = '';
-    let downloadUrl = '';
-    let isVideo = false;
+    let result: MediaResult | null = null;
+    let methodUsed = '';
 
-    // Method 1: RapidAPI Instagram Scraper
+    // Fallback chain: try each method in order
     if (rapidApiKey) {
-      try {
-        const apiUrl = `https://instagram-scraper-api2.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
-        const apiRes = await fetch(apiUrl, {
-          headers: {
-            'x-rapidapi-host': 'instagram-scraper-api2.p.rapidapi.com',
-            'x-rapidapi-key': rapidApiKey,
-          },
-        });
+      console.log('Trying ScraperAPI2...');
+      result = await tryScraperAPI2(url, rapidApiKey);
+      if (result) methodUsed = 'ScraperAPI2';
 
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          console.log('RapidAPI response keys:', Object.keys(apiData));
-          const data = apiData.data || apiData;
+      if (!result) {
+        console.log('Trying Looter2...');
+        result = await tryLooter2(url, rapidApiKey);
+        if (result) methodUsed = 'Looter2';
+      }
 
-          if (data) {
-            // Handle carousel/sidecar posts
-            if (data.carousel_media || data.resources) {
-              const items = data.carousel_media || data.resources || [];
-              const first = items[0];
-              if (first) {
-                thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || '';
-                isVideo = first.video_url ? true : false;
-                downloadUrl = first.video_url || thumbnail;
-              }
-            }
-
-            // Single media
-            if (!thumbnail) {
-              thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || '';
-              isVideo = !!data.video_url || data.media_type === 2 || data.is_video;
-              downloadUrl = data.video_url || data.video_versions?.[0]?.url || thumbnail;
-            }
-
-            title = data.caption?.text || data.accessibility_caption || '';
-          }
-        } else {
-          console.log('RapidAPI error status:', apiRes.status, await apiRes.text());
-        }
-      } catch (e) {
-        console.log('RapidAPI method failed:', e);
+      if (!result) {
+        console.log('Trying SaveFrom...');
+        result = await trySaveFrom(url, rapidApiKey);
+        if (result) methodUsed = 'SaveFrom';
       }
     }
 
-    // Method 2: Fallback to oEmbed
-    if (!thumbnail) {
-      try {
-        const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
-        const oembedRes = await fetch(oembedUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-          },
-        });
-        
-        if (oembedRes.ok) {
-          const contentType = oembedRes.headers.get('content-type') || '';
-          if (contentType.includes('json')) {
-            const oembedData = await oembedRes.json();
-            thumbnail = oembedData.thumbnail_url || '';
-            title = oembedData.title || '';
-            if (thumbnail) downloadUrl = thumbnail;
-          }
-        }
-      } catch (e) {
-        console.log('oEmbed failed:', e);
-      }
+    if (!result) {
+      console.log('Trying oEmbed...');
+      result = await tryOEmbed(url);
+      if (result) methodUsed = 'oEmbed';
     }
 
-    // Method 3: Fallback to OG tags
-    if (!thumbnail) {
-      try {
-        const pageRes = await fetch(url, {
-          headers: {
-            'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-            'Accept': 'text/html',
-          },
-          redirect: 'follow',
-        });
-
-        if (pageRes.ok) {
-          const html = await pageRes.text();
-          
-          const ogImageMatch = html.match(/property="og:image"\s+content="([^"]+)"/i) 
-            || html.match(/content="([^"]+)"\s+property="og:image"/i);
-          if (ogImageMatch) {
-            thumbnail = ogImageMatch[1].replace(/&amp;/g, '&');
-            downloadUrl = thumbnail;
-          }
-
-          const ogVideoMatch = html.match(/property="og:video"\s+content="([^"]+)"/i)
-            || html.match(/content="([^"]+)"\s+property="og:video"/i);
-          if (ogVideoMatch) {
-            downloadUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
-            isVideo = true;
-          }
-
-          const ogTitleMatch = html.match(/property="og:title"\s+content="([^"]+)"/i)
-            || html.match(/content="([^"]+)"\s+property="og:title"/i);
-          if (ogTitleMatch) title = ogTitleMatch[1];
-        }
-      } catch (e) {
-        console.log('Page fetch failed:', e);
-      }
+    if (!result) {
+      console.log('Trying OG tags...');
+      result = await tryOGTags(url);
+      if (result) methodUsed = 'OGTags';
     }
 
-    if (!thumbnail && !downloadUrl) {
+    if (!result) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -156,6 +299,8 @@ Deno.serve(async (req) => {
       );
     }
 
+    console.log('Extraction successful via:', methodUsed);
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -163,10 +308,11 @@ Deno.serve(async (req) => {
           url,
           shortcode,
           type: mediaType,
-          thumbnail,
-          title: title.substring(0, 200),
-          downloadUrl: downloadUrl || thumbnail,
-          isVideo,
+          thumbnail: result.thumbnail,
+          title: result.title.substring(0, 200),
+          downloadUrl: result.downloadUrl || result.thumbnail,
+          isVideo: result.isVideo,
+          method: methodUsed,
         },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
