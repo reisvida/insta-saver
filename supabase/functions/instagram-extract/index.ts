@@ -23,56 +23,64 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: RapidAPI Instagram Scraper 2023
-async function tryScraperAPI2(url: string, apiKey: string): Promise<MediaResult | null> {
+// Method 1: RapidAPI Instagram Scraper Stable API
+async function tryScraperStable(url: string, apiKey: string): Promise<MediaResult | null> {
   try {
-    const apiUrl = `https://instagram-scraper-2023.p.rapidapi.com/v1/post_info?code_or_id_or_url=${encodeURIComponent(url)}`;
+    const shortcode = extractShortcode(url);
+    if (!shortcode) return null;
+
+    const apiUrl = `https://instagram-scraper-stable-api.p.rapidapi.com/get_post_data.php?post_code=${shortcode}`;
     const res = await fetch(apiUrl, {
       headers: {
-        'x-rapidapi-host': 'instagram-scraper-2023.p.rapidapi.com',
+        'x-rapidapi-host': 'instagram-scraper-stable-api.p.rapidapi.com',
         'x-rapidapi-key': apiKey,
       },
     });
 
     if (!res.ok) {
-      console.log('ScraperAPI2 error:', res.status);
+      console.log('ScraperStable error:', res.status);
       return null;
     }
 
-    const apiData = await res.json();
-    const data = apiData.data || apiData;
-    if (!data) return null;
-
-    let thumbnail = '';
-    let downloadUrl = '';
-    let isVideo = false;
-    let title = '';
-
-    // Carousel
-    if (data.carousel_media || data.resources) {
-      const first = (data.carousel_media || data.resources)?.[0];
-      if (first) {
-        thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || '';
-        isVideo = !!first.video_url;
-        downloadUrl = first.video_url || thumbnail;
-      }
-    }
-
-    // Single media
-    if (!thumbnail) {
-      thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || '';
-      isVideo = !!data.video_url || data.media_type === 2 || data.is_video;
-      downloadUrl = data.video_url || data.video_versions?.[0]?.url || thumbnail;
-    }
-
-    title = data.caption?.text || data.accessibility_caption || '';
-
-    if (!thumbnail && !downloadUrl) return null;
-    return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+    const raw = await res.json();
+    console.log('ScraperStable response keys:', JSON.stringify(Object.keys(raw)));
+    return parseGenericMediaResponse(raw);
   } catch (e) {
-    console.log('ScraperAPI2 failed:', e);
+    console.log('ScraperStable failed:', e);
     return null;
   }
+}
+
+function parseGenericMediaResponse(raw: any): MediaResult | null {
+  const data = raw.data || raw.result || raw;
+  if (!data) return null;
+
+  let thumbnail = '';
+  let downloadUrl = '';
+  let isVideo = false;
+  let title = '';
+
+  // Carousel
+  const items = data.carousel_media || data.resources || data.carousel;
+  if (items && Array.isArray(items) && items.length > 0) {
+    const first = items[0];
+    thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || first.url || '';
+    isVideo = !!first.video_url || first.media_type === 2;
+    downloadUrl = first.video_url || thumbnail;
+  }
+
+  // Single media
+  if (!thumbnail) {
+    thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || data.thumbnail || data.image || '';
+    isVideo = !!data.video_url || data.media_type === 2 || data.is_video || !!data.video;
+    downloadUrl = data.video_url || data.video_versions?.[0]?.url || data.video || data.download_url || thumbnail;
+  }
+
+  title = data.caption?.text || data.accessibility_caption || data.title || '';
+  if (typeof title !== 'string') title = '';
+
+  if (!thumbnail && !downloadUrl) return null;
+  return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
 }
 
 // Method 2: RapidAPI Instagram Looter2
@@ -260,9 +268,9 @@ Deno.serve(async (req) => {
 
     // Fallback chain: try each method in order
     if (rapidApiKey) {
-      console.log('Trying ScraperAPI2...');
-      result = await tryScraperAPI2(url, rapidApiKey);
-      if (result) methodUsed = 'ScraperAPI2';
+      console.log('Trying ScraperStable...');
+      result = await tryScraperStable(url, rapidApiKey);
+      if (result) methodUsed = 'ScraperStable';
 
       if (!result) {
         console.log('Trying Looter2...');
