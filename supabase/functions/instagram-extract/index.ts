@@ -182,62 +182,62 @@ async function tryOGTags(url: string): Promise<MediaResult | null> {
   }
 }
 
-// Method 4: RapidAPI All-in-One Downloader (if subscribed)
+// Method 4: Social Download All In One (RapidAPI)
 async function tryRapidAPI(url: string): Promise<MediaResult | null> {
   const apiKey = Deno.env.get('RAPIDAPI_KEY');
   if (!apiKey) return null;
 
-  const hosts = [
-    { host: 'all-in-one-instagram-downloader-api.p.rapidapi.com', path: '/v1/social/autolink' },
-    { host: 'instagram-scraper-2023.p.rapidapi.com', path: '/v1/post_info' },
-  ];
+  const host = 'social-download-all-in-one.p.rapidapi.com';
+  try {
+    const res = await fetch(`https://${host}/v1/social/autolink`, {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': host,
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    });
 
-  for (const { host, path } of hosts) {
-    try {
-      const fullUrl = path.includes('autolink')
-        ? `https://${host}${path}`
-        : `https://${host}${path}?code_or_id_or_url=${encodeURIComponent(url)}`;
-
-      const res = await fetch(fullUrl, {
-        method: path.includes('autolink') ? 'POST' : 'GET',
-        headers: {
-          'x-rapidapi-host': host,
-          'x-rapidapi-key': apiKey,
-          ...(path.includes('autolink') ? { 'Content-Type': 'application/json' } : {}),
-        },
-        ...(path.includes('autolink') ? { body: JSON.stringify({ url }) } : {}),
-      });
-
-      if (!res.ok) {
-        console.log(`RapidAPI ${host} error:`, res.status);
-        continue;
-      }
-
-      const raw = await res.json();
-      console.log(`RapidAPI ${host} response keys:`, JSON.stringify(Object.keys(raw)));
-
-      const data = raw.data || raw.result || raw;
-      const items = Array.isArray(data) ? data : (data?.medias || data?.media || null);
-      
-      if (items && Array.isArray(items) && items.length > 0) {
-        const first = items[0];
-        const thumbnail = first.thumbnail || first.preview || first.image || first.url || '';
-        const isVid = first.type === 'video' || /\.mp4/i.test(first.url || '');
-        const dl = first.url || first.download_url || first.video || thumbnail;
-        if (dl || thumbnail) return { thumbnail: thumbnail || dl, title: raw.title || '', downloadUrl: dl || thumbnail, isVideo: isVid };
-      }
-
-      // Single object
-      const thumbnail = data?.thumbnail || data?.display_url || data?.image || '';
-      const isVid = !!data?.video_url || data?.media_type === 2;
-      const dl = data?.video_url || data?.download_url || thumbnail;
-      if (dl || thumbnail) return { thumbnail: thumbnail || dl, title: data?.caption?.text || '', downloadUrl: dl || thumbnail, isVideo: isVid };
-    } catch (e) {
-      console.log(`RapidAPI ${host} failed:`, e);
-      continue;
+    if (!res.ok) {
+      const errText = await res.text();
+      console.log(`RapidAPI ${host} error:`, res.status, errText);
+      return null;
     }
+
+    const raw = await res.json();
+    console.log(`RapidAPI response keys:`, JSON.stringify(Object.keys(raw)));
+
+    // This API returns medias array with url, thumbnail, quality, type
+    const medias = raw.medias || raw.data?.medias || [];
+    if (Array.isArray(medias) && medias.length > 0) {
+      // Pick the best quality video or image
+      const videos = medias.filter((m: any) => m.type === 'video');
+      const images = medias.filter((m: any) => m.type === 'image');
+      const best = videos.length > 0 ? videos[0] : images[0] || medias[0];
+      
+      const thumbnail = raw.thumbnail || best.thumbnail || best.preview || '';
+      const downloadUrl = best.url || best.download_url || '';
+      const isVideo = best.type === 'video';
+      const title = raw.title || raw.caption || '';
+      
+      if (downloadUrl || thumbnail) {
+        return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+      }
+    }
+
+    // Single object response
+    const thumbnail = raw.thumbnail || raw.image || '';
+    const downloadUrl = raw.url || raw.download_url || '';
+    if (downloadUrl || thumbnail) {
+      return { thumbnail: thumbnail || downloadUrl, title: raw.title || '', downloadUrl: downloadUrl || thumbnail, isVideo: !!raw.video };
+    }
+
+    return null;
+  } catch (e) {
+    console.log(`RapidAPI failed:`, e);
+    return null;
   }
-  return null;
 }
 
 Deno.serve(async (req) => {
