@@ -23,234 +23,95 @@ interface MediaResult {
   isVideo: boolean;
 }
 
-// Method 1: All-in-One Instagram Downloader API (SaverAPI)
-async function tryAllInOneDownloader(url: string, apiKey: string): Promise<MediaResult | null> {
-  const host = 'all-in-one-instagram-downloader-api.p.rapidapi.com';
-  
-  // Try POST with JSON body
+// Method 1: Firecrawl - scrape Instagram page for OG/meta tags
+async function tryFirecrawl(url: string): Promise<MediaResult | null> {
+  const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
+  if (!apiKey) {
+    console.log('FIRECRAWL_API_KEY not configured');
+    return null;
+  }
+
   try {
-    const res = await fetch(`https://${host}/v1/social/autolink`, {
+    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
       headers: {
-        'x-rapidapi-host': host,
-        'x-rapidapi-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({
+        url,
+        formats: ['html'],
+        onlyMainContent: false,
+        waitFor: 2000,
+      }),
     });
 
-    if (res.ok) {
-      const raw = await res.json();
-      console.log('AllInOne v1/social/autolink response keys:', JSON.stringify(Object.keys(raw)));
-      const result = parseDownloaderResponse(raw);
-      if (result) return result;
-    } else {
-      console.log('AllInOne v1/social/autolink error:', res.status);
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.log('Firecrawl error:', response.status, errBody);
+      return null;
     }
-  } catch (e) {
-    console.log('AllInOne v1 failed:', e);
-  }
 
-  // Try GET with url param
-  try {
-    const res = await fetch(`https://${host}/download?url=${encodeURIComponent(url)}`, {
-      headers: {
-        'x-rapidapi-host': host,
-        'x-rapidapi-key': apiKey,
-      },
-    });
-
-    if (res.ok) {
-      const raw = await res.json();
-      console.log('AllInOne /download response keys:', JSON.stringify(Object.keys(raw)));
-      const result = parseDownloaderResponse(raw);
-      if (result) return result;
-    } else {
-      console.log('AllInOne /download error:', res.status);
+    const result = await response.json();
+    const html = result.data?.html || result.html || '';
+    if (!html) {
+      console.log('Firecrawl: no HTML returned');
+      return null;
     }
-  } catch (e) {
-    console.log('AllInOne /download failed:', e);
-  }
 
-  // Try POST with form-urlencoded  
-  try {
-    const res = await fetch(`https://${host}/`, {
-      method: 'POST',
-      headers: {
-        'x-rapidapi-host': host,
-        'x-rapidapi-key': apiKey,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: `url=${encodeURIComponent(url)}`,
-    });
+    console.log('Firecrawl: got HTML, length:', html.length);
 
-    if (res.ok) {
-      const raw = await res.json();
-      console.log('AllInOne root POST response keys:', JSON.stringify(Object.keys(raw)));
-      const result = parseDownloaderResponse(raw);
-      if (result) return result;
-    } else {
-      console.log('AllInOne root POST error:', res.status);
+    let thumbnail = '';
+    let downloadUrl = '';
+    let isVideo = false;
+    let title = '';
+
+    // Extract OG tags
+    const ogImage = html.match(/property="og:image"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:image"/i);
+    if (ogImage) {
+      thumbnail = ogImage[1].replace(/&amp;/g, '&');
+      downloadUrl = thumbnail;
     }
-  } catch (e) {
-    console.log('AllInOne root failed:', e);
-  }
 
-  return null;
-}
-
-function parseDownloaderResponse(raw: any): MediaResult | null {
-  // Handle various downloader API response formats
-  const data = raw.data || raw.result || raw.medias || raw;
-  
-  // Array of media items
-  const items = Array.isArray(data) ? data : (data?.medias || data?.media || data?.links || data?.downloads || null);
-  if (items && Array.isArray(items) && items.length > 0) {
-    const first = items[0];
-    const thumbnail = first.thumbnail || first.preview || first.image || first.thumb || '';
-    const isVideo = first.type === 'video' || !!first.video || /video/i.test(first.quality || '') || /\.mp4/i.test(first.url || '');
-    const downloadUrl = first.url || first.download_url || first.video || first.link || '';
-    const title = raw.title || raw.caption || data.title || '';
-    if (downloadUrl || thumbnail) {
-      return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+    const ogVideo = html.match(/property="og:video(?::url)?"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:video(?::url)?"/i);
+    if (ogVideo) {
+      downloadUrl = ogVideo[1].replace(/&amp;/g, '&');
+      isVideo = true;
     }
-  }
 
-  // Single media response
-  const thumbnail = data?.thumbnail || data?.image || data?.preview || data?.thumb || '';
-  const downloadUrl = data?.url || data?.download_url || data?.video || data?.link || '';
-  const isVideo = !!data?.video || data?.type === 'video' || /\.mp4/i.test(downloadUrl);
-  const title = data?.title || data?.caption || raw?.title || '';
-  
-  if (downloadUrl || thumbnail) {
+    const ogTitle = html.match(/property="og:(?:title|description)"\s+content="([^"]+)"/i)
+      || html.match(/content="([^"]+)"\s+property="og:(?:title|description)"/i);
+    if (ogTitle) title = ogTitle[1];
+
+    // Also try to find video URLs in the page source
+    if (!isVideo) {
+      const videoUrl = html.match(/"video_url"\s*:\s*"([^"]+)"/);
+      if (videoUrl) {
+        downloadUrl = videoUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+        isVideo = true;
+      }
+    }
+
+    // Try to find display_url for images
+    if (!thumbnail) {
+      const displayUrl = html.match(/"display_url"\s*:\s*"([^"]+)"/);
+      if (displayUrl) {
+        thumbnail = displayUrl[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+        if (!downloadUrl) downloadUrl = thumbnail;
+      }
+    }
+
+    if (!thumbnail && !downloadUrl) return null;
     return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
-  }
-  return null;
-}
-
-function parseGenericMediaResponse(raw: any): MediaResult | null {
-  const data = raw.data || raw.result || raw;
-  if (!data) return null;
-
-  let thumbnail = '';
-  let downloadUrl = '';
-  let isVideo = false;
-  let title = '';
-
-  // Carousel
-  const items = data.carousel_media || data.resources || data.carousel;
-  if (items && Array.isArray(items) && items.length > 0) {
-    const first = items[0];
-    thumbnail = first.thumbnail_url || first.display_url || first.image_versions2?.candidates?.[0]?.url || first.url || '';
-    isVideo = !!first.video_url || first.media_type === 2;
-    downloadUrl = first.video_url || thumbnail;
-  }
-
-  // Single media
-  if (!thumbnail) {
-    thumbnail = data.thumbnail_url || data.display_url || data.image_versions2?.candidates?.[0]?.url || data.thumbnail || data.image || '';
-    isVideo = !!data.video_url || data.media_type === 2 || data.is_video || !!data.video;
-    downloadUrl = data.video_url || data.video_versions?.[0]?.url || data.video || data.download_url || thumbnail;
-  }
-
-  title = data.caption?.text || data.accessibility_caption || data.title || '';
-  if (typeof title !== 'string') title = '';
-
-  if (!thumbnail && !downloadUrl) return null;
-  return { thumbnail, title, downloadUrl: downloadUrl || thumbnail, isVideo };
-}
-
-// Method 2: RapidAPI Instagram Looter2
-async function tryLooter2(url: string, apiKey: string): Promise<MediaResult | null> {
-  try {
-    const res = await fetch('https://instagram-looter2.p.rapidapi.com/post-dl', {
-      method: 'POST',
-      headers: {
-        'x-rapidapi-host': 'instagram-looter2.p.rapidapi.com',
-        'x-rapidapi-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ link: url }),
-    });
-
-    if (!res.ok) {
-      console.log('Looter2 error:', res.status);
-      return null;
-    }
-
-    const data = await res.json();
-    console.log('Looter2 response keys:', Object.keys(data));
-
-    // Looter2 typically returns an array of media items
-    const items = data.data || data.media || data.result || data;
-    if (Array.isArray(items) && items.length > 0) {
-      const first = items[0];
-      const thumbnail = first.thumbnail || first.image || first.url || '';
-      const isVideo = first.type === 'video' || !!first.video;
-      const downloadUrl = first.video || first.url || first.download_url || thumbnail;
-      return { thumbnail, title: data.title || data.caption || '', downloadUrl, isVideo };
-    }
-
-    // Single object response
-    if (data.thumbnail || data.image || data.download_url) {
-      const thumbnail = data.thumbnail || data.image || '';
-      const isVideo = data.type === 'video' || !!data.video;
-      const downloadUrl = data.video || data.download_url || data.url || thumbnail;
-      return { thumbnail, title: data.title || data.caption || '', downloadUrl, isVideo };
-    }
-
-    return null;
   } catch (e) {
-    console.log('Looter2 failed:', e);
+    console.log('Firecrawl failed:', e);
     return null;
   }
 }
 
-// Method 3: RapidAPI SaveFrom Downloader
-async function trySaveFrom(url: string, apiKey: string): Promise<MediaResult | null> {
-  try {
-    const res = await fetch(`https://savefrom-downloader.p.rapidapi.com/smdown`, {
-      method: 'POST',
-      headers: {
-        'x-rapidapi-host': 'savefrom-downloader.p.rapidapi.com',
-        'x-rapidapi-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ url }),
-    });
-
-    if (!res.ok) {
-      console.log('SaveFrom error:', res.status);
-      return null;
-    }
-
-    const data = await res.json();
-    console.log('SaveFrom response keys:', Object.keys(data));
-
-    const links = data.data?.links || data.links || [];
-    const thumbnail = data.data?.thumbnail || data.thumbnail || data.data?.image || '';
-    const title = data.data?.title || data.title || '';
-
-    if (links.length > 0) {
-      // Pick highest quality link
-      const best = links.sort((a: any, b: any) => (b.quality_number || 0) - (a.quality_number || 0))[0];
-      const downloadUrl = best?.url || best?.link || '';
-      const isVideo = best?.type?.includes('video') || /\.mp4/i.test(downloadUrl);
-      return { thumbnail: thumbnail || downloadUrl, title, downloadUrl, isVideo };
-    }
-
-    if (thumbnail) {
-      return { thumbnail, title, downloadUrl: thumbnail, isVideo: false };
-    }
-
-    return null;
-  } catch (e) {
-    console.log('SaveFrom failed:', e);
-    return null;
-  }
-}
-
-// Method 4: Instagram oEmbed
+// Method 2: Instagram oEmbed (free, no key needed)
 async function tryOEmbed(url: string): Promise<MediaResult | null> {
   try {
     const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
@@ -276,7 +137,7 @@ async function tryOEmbed(url: string): Promise<MediaResult | null> {
   }
 }
 
-// Method 5: OG Tags scraping
+// Method 3: Direct OG Tags scraping (free, no key needed)
 async function tryOGTags(url: string): Promise<MediaResult | null> {
   try {
     const res = await fetch(url, {
@@ -321,6 +182,64 @@ async function tryOGTags(url: string): Promise<MediaResult | null> {
   }
 }
 
+// Method 4: Social Download All In One (RapidAPI)
+async function tryRapidAPI(url: string): Promise<MediaResult | null> {
+  const apiKey = Deno.env.get('RAPIDAPI_KEY');
+  if (!apiKey) return null;
+
+  const host = 'social-download-all-in-one.p.rapidapi.com';
+  try {
+    const res = await fetch(`https://${host}/v1/social/autolink`, {
+      method: 'POST',
+      headers: {
+        'x-rapidapi-host': host,
+        'x-rapidapi-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.log(`RapidAPI ${host} error:`, res.status, errText);
+      return null;
+    }
+
+    const raw = await res.json();
+    console.log(`RapidAPI response keys:`, JSON.stringify(Object.keys(raw)));
+
+    // This API returns medias array with url, thumbnail, quality, type
+    const medias = raw.medias || raw.data?.medias || [];
+    if (Array.isArray(medias) && medias.length > 0) {
+      // Pick the best quality video or image
+      const videos = medias.filter((m: any) => m.type === 'video');
+      const images = medias.filter((m: any) => m.type === 'image');
+      const best = videos.length > 0 ? videos[0] : images[0] || medias[0];
+      
+      const thumbnail = raw.thumbnail || best.thumbnail || best.preview || '';
+      const downloadUrl = best.url || best.download_url || '';
+      const isVideo = best.type === 'video';
+      const title = raw.title || raw.caption || '';
+      
+      if (downloadUrl || thumbnail) {
+        return { thumbnail: thumbnail || downloadUrl, title, downloadUrl: downloadUrl || thumbnail, isVideo };
+      }
+    }
+
+    // Single object response
+    const thumbnail = raw.thumbnail || raw.image || '';
+    const downloadUrl = raw.url || raw.download_url || '';
+    if (downloadUrl || thumbnail) {
+      return { thumbnail: thumbnail || downloadUrl, title: raw.title || '', downloadUrl: downloadUrl || thumbnail, isVideo: !!raw.video };
+    }
+
+    return null;
+  } catch (e) {
+    console.log(`RapidAPI failed:`, e);
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -338,28 +257,19 @@ Deno.serve(async (req) => {
 
     const shortcode = extractShortcode(url);
     const mediaType = detectType(url);
-    const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
 
     let result: MediaResult | null = null;
     let methodUsed = '';
 
-    // Fallback chain: try each method in order
-    if (rapidApiKey) {
-      console.log('Trying AllInOneDownloader...');
-      result = await tryAllInOneDownloader(url, rapidApiKey);
-      if (result) methodUsed = 'AllInOneDownloader';
+    // Fallback chain
+    console.log('Trying Firecrawl...');
+    result = await tryFirecrawl(url);
+    if (result) methodUsed = 'Firecrawl';
 
-      if (!result) {
-        console.log('Trying Looter2...');
-        result = await tryLooter2(url, rapidApiKey);
-        if (result) methodUsed = 'Looter2';
-      }
-
-      if (!result) {
-        console.log('Trying SaveFrom...');
-        result = await trySaveFrom(url, rapidApiKey);
-        if (result) methodUsed = 'SaveFrom';
-      }
+    if (!result) {
+      console.log('Trying RapidAPI...');
+      result = await tryRapidAPI(url);
+      if (result) methodUsed = 'RapidAPI';
     }
 
     if (!result) {
